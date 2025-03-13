@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 bevy = "0.15.3"
+avian2d = "0.2"
 
 [profile.dev]
 opt-level = 1
