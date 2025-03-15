@@ -1,34 +1,52 @@
-use avian2d::prelude::*;
-use bevy::{math::vec2, prelude::*};
+use bevy::{prelude::*, sprite::Wireframe2dPlugin};
 
 #[derive(Component)]
-struct Ball;
-
-fn setup(mut commands: Commands) {
-    commands.spawn(Camera2d);
+struct Point {
+    previous_position: Vec3,
 }
 
-fn main() {
-    App::new()
-        .insert_resource(Gravity(Vec2::NEG_Y * 100.0))
-        .add_plugins((DefaultPlugins, PhysicsPlugins::default()))
-        .add_systems(Startup, (setup, spawn_ball))
-        .run();
+fn constrain_to_world(mut query: Query<(&Point, &mut Transform)>) {
+    for (_, mut transform) in &mut query {
+        transform.translation.x = transform.translation.x.clamp(0.0, 50.0);
+        transform.translation.y = transform.translation.y.clamp(0.0, 50.0);
+    }
 }
 
-fn spawn_ball(
+fn verlet_integration(mut query: Query<(&mut Point, &mut Transform)>) {
+    for (mut point, mut transform) in &mut query {
+        let temp_position = transform.translation.clone();
+        // slightly dampen the velocity to simulate drag
+        let velocity = (transform.translation - point.previous_position) * 0.99;
+        transform.translation += velocity;
+        point.previous_position = temp_position;
+    }
+}
+
+fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let shape = meshes.add(Circle::new(50.0));
-    let material = materials.add(ColorMaterial::from(Color::srgb(1.0, 0.0, 0.0)));
+    let circle = meshes.add(Circle::new(10.0));
+    let colour = materials.add(Color::srgb(1.0, 0.0, 0.0));
+
+    commands.spawn(Camera2d);
     commands.spawn((
-        Ball,
-        Mesh2d(shape),
-        MeshMaterial2d(material),
-        RigidBody::Dynamic,
-        Collider::circle(50.0),
-        Transform::from_xyz(0.0, 0.0, 0.0),
+        Point {
+            previous_position: Vec3::NEG_X,
+        },
+        Transform {
+            ..Default::default()
+        },
+        Mesh2d(circle),
+        MeshMaterial2d(colour),
     ));
+}
+
+fn main() {
+    App::new()
+        .add_plugins((DefaultPlugins, Wireframe2dPlugin))
+        .add_systems(Startup, setup)
+        .add_systems(Update, (verlet_integration, constrain_to_world))
+        .run();
 }
