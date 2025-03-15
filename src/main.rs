@@ -7,15 +7,21 @@ struct Point {
 
 fn constrain_to_world(mut query: Query<(&Point, &mut Transform)>) {
     for (_, mut transform) in &mut query {
-        transform.translation.x = transform.translation.x.clamp(0.0, 50.0);
-        transform.translation.y = transform.translation.y.clamp(0.0, 50.0);
+        transform.translation.x = transform.translation.x.clamp(0.0, 100.0);
+        transform.translation.y = transform.translation.y.clamp(0.0, 100.0);
+    }
+}
+
+fn apply_gravity(mut query: Query<(&Point, &mut Transform)>) {
+    for (_, mut transform) in &mut query {
+        transform.translation.y -= 1.0;
     }
 }
 
 fn verlet_integration(mut query: Query<(&mut Point, &mut Transform)>) {
     for (mut point, mut transform) in &mut query {
         let temp_position = transform.translation.clone();
-        // slightly dampen the velocity to simulate drag
+        // Slightly dampen the velocity to simulate drag
         let velocity = (transform.translation - point.previous_position) * 0.99;
         transform.translation += velocity;
         point.previous_position = temp_position;
@@ -35,9 +41,7 @@ fn setup(
         Point {
             previous_position: Vec3::NEG_X,
         },
-        Transform {
-            ..Default::default()
-        },
+        Transform::from_xyz(0.0, 100.0, 0.0),
         Mesh2d(circle),
         MeshMaterial2d(colour),
     ));
@@ -47,6 +51,13 @@ fn main() {
     App::new()
         .add_plugins((DefaultPlugins, Wireframe2dPlugin))
         .add_systems(Startup, setup)
-        .add_systems(Update, (verlet_integration, constrain_to_world))
+        .add_systems(
+            Update,
+            (
+                apply_gravity.before(constrain_to_world),
+                constrain_to_world,
+                verlet_integration.before(apply_gravity),
+            ),
+        )
         .run();
 }
