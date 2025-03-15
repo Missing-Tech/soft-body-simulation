@@ -7,20 +7,43 @@ struct Point {
 
 #[derive(Component)]
 struct DistanceContraint {
-    desired_distance: u16,
+    desired_distance: f32,
 }
 
 #[derive(Component)]
 struct Line {
     start: Entity,
     end: Entity,
-    length: DistanceContraint,
 }
 
 fn constrain_to_world(mut query: Query<&mut Transform, With<Point>>) {
     for mut transform in query.iter_mut() {
         transform.translation.x = transform.translation.x.clamp(0.0, 500.0);
         transform.translation.y = transform.translation.y.clamp(0.0, 500.0);
+    }
+}
+
+fn apply_distance_constraint(
+    mut line_query: Query<(&Line, &DistanceContraint)>,
+    mut point_query: Query<&mut Transform, (With<Point>, Without<Line>)>,
+) {
+    for (line, distance_constraint) in line_query.iter_mut() {
+        if let Ok([mut start_tf, mut end_tf]) = point_query.get_many_mut([line.start, line.end]) {
+            let distance = start_tf.translation.distance(end_tf.translation);
+            if distance > distance_constraint.desired_distance {
+                let start_pos = start_tf.translation;
+                let end_pos = end_tf.translation;
+
+                let midpoint = (start_pos + end_pos) / 2.0;
+                let direction = (end_pos - start_pos).normalize();
+                let new_vector = direction * distance_constraint.desired_distance;
+                let new_start = midpoint + new_vector;
+                let new_end = midpoint - new_vector;
+
+                start_tf.translation = new_start;
+                end_tf.translation = new_end;
+            }
+        }
     }
 }
 
@@ -104,7 +127,7 @@ fn setup(mut commands: Commands) {
             Point {
                 previous_position: Vec3::ZERO,
             },
-            Transform::from_xyz(100.0, 100.0, 0.0),
+            Transform::from_xyz(50.0, 100.0, 0.0),
         ))
         .id();
 
@@ -121,9 +144,9 @@ fn setup(mut commands: Commands) {
         Line {
             start: point1,
             end: point2,
-            length: DistanceContraint {
-                desired_distance: 20,
-            },
+        },
+        DistanceContraint {
+            desired_distance: 50.0,
         },
         Transform::default(),
         GlobalTransform::default(),
@@ -145,6 +168,7 @@ fn main() {
             Update,
             (
                 apply_gravity.before(constrain_to_world),
+                apply_distance_constraint.before(constrain_to_world),
                 constrain_to_world,
                 verlet_integration.before(apply_gravity),
                 update_line,
