@@ -10,12 +10,18 @@ struct Point {
 
 #[derive(Component)]
 struct Blob {
-    lines: Vec<Entity>,
+    points: Vec<Entity>,
+    circumference: f32,
 }
 
 #[derive(Component)]
 struct DistanceContraint {
     desired_distance: f32,
+}
+
+#[derive(Component)]
+struct AreaConstraint {
+    desired_area: f32,
 }
 
 #[derive(Component)]
@@ -86,6 +92,62 @@ fn apply_distance_constraint(
                     } else {
                         midpoint - new_vector
                     }
+                }
+            }
+        }
+    }
+}
+
+fn get_trapezoidal_area(points: &[Vec3]) -> f32 {
+    let mut area: f32 = 0.;
+
+    for i in 0..points.len() {
+        let current = points[i];
+        let next = if i == points.len() - 1 {
+            points[0]
+        } else {
+            points[i + 1]
+        };
+
+        area += (current.x - next.x) * (current.y + next.y) / 2.;
+    }
+
+    return area.abs();
+}
+
+fn apply_area_constraint(
+    mut blob_query: Query<(&Blob, &AreaConstraint)>,
+    mut point_query: Query<&mut Transform, (With<Point>, Without<Line>, Without<Blob>)>,
+) {
+    for (blob, area_constraint) in blob_query.iter_mut() {
+        for _ in 0..5 {
+            let mut positions = Vec::with_capacity(blob.points.len());
+            for &entity in &blob.points {
+                if let Ok(transform) = point_query.get(entity) {
+                    positions.push(transform.translation);
+                } else {
+                    positions.push(Vec3::ZERO);
+                }
+            }
+
+            let current_area = get_trapezoidal_area(&positions);
+
+            let error = area_constraint.desired_area - current_area;
+            let offset = error / blob.circumference;
+
+            let len = positions.len();
+            for i in 0..len {
+                let prev_idx = if i == 0 { len - 1 } else { i - 1 };
+                let next_idx = (i + 1) % len;
+
+                let prev_pos = positions[prev_idx];
+                let next_pos = positions[next_idx];
+
+                let secant = next_pos - prev_pos;
+                let normal = Vec3::new(secant.y, -secant.x, 0.0).normalize_or_zero() * offset;
+
+                if let Ok(mut transform) = point_query.get_mut(blob.points[i]) {
+                    transform.translation = positions[i] + normal;
                 }
             }
         }
@@ -237,13 +299,14 @@ fn setup_free_line(mut commands: Commands) {
 fn setup_blob(mut commands: Commands) {
     let radius = 50.0;
     let circumference = radius * PI * 2.0;
+    let area = radius * radius * PI * 1.2;
     let num_points = 8;
     let chord_length = circumference / num_points as f32;
 
     let mut previous_entity = None;
     let mut first_entity = None;
 
-    let mut lines = Vec::new();
+    let mut points = Vec::new();
 
     for i in 0..num_points {
         let mass = 50.0;
@@ -256,6 +319,7 @@ fn setup_blob(mut commands: Commands) {
                 previous_position: None,
                 mass,
             },
+            Friction(0.95),
         ));
 
         if previous_entity.is_none() {
@@ -264,45 +328,44 @@ fn setup_blob(mut commands: Commands) {
         }
 
         let entity = cmd.id();
+        points.push(entity);
 
         if let Some(e) = previous_entity {
-            let line_entity = commands
-                .spawn((
-                    Line {
-                        start: e,
-                        end: entity,
-                    },
-                    DistanceContraint {
-                        desired_distance: chord_length,
-                    },
-                ))
-                .id();
-            lines.push(line_entity);
+            commands.spawn((
+                Line {
+                    start: e,
+                    end: entity,
+                },
+                DistanceContraint {
+                    desired_distance: chord_length,
+                },
+            ));
         }
 
         previous_entity = Some(entity);
     }
 
-    // Finally, connect the last point to the first, to close the loop.
     if let (Some(first), Some(last)) = (first_entity, previous_entity) {
         if first != last {
-            let line_entity = commands
-                .spawn((
-                    Line {
-                        start: last,
-                        end: first,
-                    },
-                    DistanceContraint {
-                        desired_distance: chord_length,
-                    },
-                ))
-                .id();
-            lines.push(line_entity);
+            commands.spawn((
+                Line {
+                    start: last,
+                    end: first,
+                },
+                DistanceContraint {
+                    desired_distance: chord_length,
+                },
+            ));
         }
     }
 
-    // Create a single “Blob” entity referencing all line entities.
-    commands.spawn((Blob { lines }, Name::new("Blob")));
+    commands.spawn((
+        Blob {
+            points,
+            circumference,
+        },
+        AreaConstraint { desired_area: area },
+    ));
 }
 
 fn setup_camera(mut commands: Commands) {
@@ -313,6 +376,7 @@ fn main() {
     let system_set = (
         verlet_integration,
         follow_mouse,
+        apply_area_constraint,
         apply_distance_constraint,
         constrain_to_world,
     )
