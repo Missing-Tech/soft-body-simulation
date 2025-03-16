@@ -6,6 +6,8 @@ use bevy::{prelude::*, sprite::Wireframe2dPlugin, window::PrimaryWindow};
 struct Point {
     previous_position: Option<Vec3>,
     mass: f32,
+    displacement: Vec3,
+    displacement_weight: u32,
 }
 
 #[derive(Component)]
@@ -37,6 +39,9 @@ struct Locked;
 struct FollowMouse;
 
 #[derive(Component)]
+struct CollideWithMouse;
+
+#[derive(Component)]
 struct Line {
     start: Entity,
     end: Entity,
@@ -59,18 +64,18 @@ fn constrain_to_world(
 
 fn apply_distance_constraint(
     mut line_query: Query<(&Line, &DistanceContraint)>,
-    mut point_query: Query<(&mut Transform, Option<&Locked>), (With<Point>, Without<Line>)>,
+    mut point_query: Query<(&mut Point, &Transform, Option<&Locked>), Without<Line>>,
 ) {
     for (line, distance_constraint) in line_query.iter_mut() {
-        if let Ok([(mut start_tf, start_locked), (mut end_tf, end_locked)]) =
-            point_query.get_many_mut([line.start, line.end])
+        if let Ok(
+            [(mut start_point, start_tf, start_locked), (mut end_point, end_tf, end_locked)],
+        ) = point_query.get_many_mut([line.start, line.end])
         {
             let (start_locked, end_locked) = (start_locked.is_some(), end_locked.is_some());
             if start_locked && end_locked {
                 continue;
             }
-
-            for _ in 0..=5 {
+            for _ in 0..5 {
                 let start_pos = start_tf.translation;
                 let end_pos = end_tf.translation;
 
@@ -79,19 +84,23 @@ fn apply_distance_constraint(
                 let new_vector = direction * distance_constraint.desired_distance / 2.0;
 
                 if !start_locked {
-                    start_tf.translation = if end_locked {
+                    let new_start = if end_locked {
                         end_tf.translation + new_vector * 2.0
                     } else {
                         midpoint + new_vector
                     };
+                    start_point.displacement += new_start - start_pos;
+                    start_point.displacement_weight += 1;
                 }
 
                 if !end_locked {
-                    end_tf.translation = if start_locked {
+                    let new_end = if start_locked {
                         start_tf.translation - new_vector * 2.0
                     } else {
                         midpoint - new_vector
-                    }
+                    };
+                    end_point.displacement += new_end - end_pos;
+                    end_point.displacement_weight += 1;
                 }
             }
         }
@@ -117,13 +126,16 @@ fn get_trapezoidal_area(points: &[Vec3]) -> f32 {
 
 fn apply_area_constraint(
     mut blob_query: Query<(&Blob, &AreaConstraint)>,
-    mut point_query: Query<&mut Transform, (With<Point>, Without<Line>, Without<Blob>)>,
+    mut point_query: Query<
+        (&mut Transform, &mut Point),
+        (With<Point>, Without<Line>, Without<Blob>),
+    >,
 ) {
     for (blob, area_constraint) in blob_query.iter_mut() {
         for _ in 0..5 {
             let mut positions = Vec::with_capacity(blob.points.len());
             for &entity in &blob.points {
-                if let Ok(transform) = point_query.get(entity) {
+                if let Ok((transform, _)) = point_query.get(entity) {
                     positions.push(transform.translation);
                 } else {
                     positions.push(Vec3::ZERO);
@@ -146,8 +158,9 @@ fn apply_area_constraint(
                 let secant = next_pos - prev_pos;
                 let normal = Vec3::new(secant.y, -secant.x, 0.0).normalize_or_zero() * offset;
 
-                if let Ok(mut transform) = point_query.get_mut(blob.points[i]) {
-                    transform.translation = positions[i] + normal;
+                if let Ok((_, mut point)) = point_query.get_mut(blob.points[i]) {
+                    point.displacement += normal;
+                    point.displacement_weight += 1;
                 }
             }
         }
@@ -177,43 +190,29 @@ fn verlet_integration(
     }
 }
 
-fn update_line(
-    mut line_query: Query<(&Line, &mut Transform)>,
-    point_query: Query<&Transform, (With<Point>, Without<Line>)>,
-) {
-    for (line, mut transform) in line_query.iter_mut() {
-        if let (Ok(start_tf), Ok(end_tf)) = (point_query.get(line.start), point_query.get(line.end))
-        {
-            let start_pos = start_tf.translation;
-            let end_pos = end_tf.translation;
+fn apply_displacement(mut query: Query<(&mut Transform, &mut Point)>) {
+    for (mut transform, mut point) in query.iter_mut() {
+        if point.displacement_weight > 0 {
+            let displacement = point.displacement / point.displacement_weight as f32;
 
-            let length = start_pos.distance(end_pos);
-            let midpoint = (start_pos + end_pos) / 2.0;
-            let direction = end_pos - start_pos;
-            let angle = direction.y.atan2(direction.x);
+            transform.translation += displacement;
 
-            transform.translation = Vec3::new(midpoint.x, midpoint.y, -1.0);
-            transform.rotation = Quat::from_rotation_z(angle);
-            transform.scale = Vec3::new(length, 1.0, 1.0);
+            point.displacement = Vec3::ZERO;
+            point.displacement_weight = 0;
         }
     }
 }
 
-fn display_line(
-    query: Query<Entity, With<Line>>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+fn update_line(
+    mut line_query: Query<&Line>,
+    point_query: Query<&Transform, (With<Point>, Without<Line>)>,
+    mut gizmos: Gizmos,
 ) {
-    let quad = Rectangle::new(1.0, 3.0);
-    let mesh_handle = meshes.add(quad);
-    let color_handle = materials.add(ColorMaterial::from(Color::WHITE));
-
-    for entity in query.iter() {
-        commands.entity(entity).insert_if_new((
-            Mesh2d(mesh_handle.clone()),
-            MeshMaterial2d(color_handle.clone()),
-        ));
+    for line in line_query.iter_mut() {
+        if let (Ok(start_tf), Ok(end_tf)) = (point_query.get(line.start), point_query.get(line.end))
+        {
+            gizmos.line(start_tf.translation, end_tf.translation, Color::WHITE);
+        }
     }
 }
 
@@ -230,6 +229,45 @@ fn display_points(
         commands
             .entity(entity)
             .insert((Mesh2d(circle.clone()), MeshMaterial2d(colour.clone())));
+    }
+}
+
+fn collide_with_mouse(
+    windows_query: Query<&Window, With<PrimaryWindow>>,
+    camera_query: Query<(&Camera, &GlobalTransform)>,
+    mut query: Query<&mut Transform, With<CollideWithMouse>>,
+    mouse_input: Res<ButtonInput<MouseButton>>,
+    mut gizmos: Gizmos,
+) {
+    // Only update positions if the left mouse button is currently pressed.
+    if !mouse_input.pressed(MouseButton::Left) {
+        return;
+    }
+
+    let (camera, camera_transform) = camera_query.single();
+    let window = windows_query.single();
+
+    if let Some(cursor_pos) = window.cursor_position() {
+        match camera.viewport_to_world_2d(camera_transform, cursor_pos) {
+            Ok(world_position) => {
+                gizmos.circle_2d(
+                    Isometry2d::from_xy(world_position.x, world_position.y),
+                    50.,
+                    Color::WHITE,
+                );
+                for mut transform in query.iter_mut() {
+                    let vec3_world_pos = Vec3::new(world_position.x, world_position.y, 0.);
+                    let distance = transform.translation.distance(vec3_world_pos);
+                    if distance < 50. {
+                        let difference = (transform.translation - vec3_world_pos).normalize() * 50.;
+                        transform.translation = vec3_world_pos + difference;
+                    }
+                }
+            }
+            Err(e) => {
+                panic!("{:?}", e);
+            }
+        }
     }
 }
 
@@ -262,45 +300,11 @@ fn follow_mouse(
     }
 }
 
-fn setup_free_line(mut commands: Commands) {
-    let stick_length: f32 = 20.0;
-    let points_count = 30;
-    let mut previous_entity = None;
-    for i in 0..=points_count {
-        let mass = 50.0;
-        let mut cmd = commands.spawn((
-            Transform::from_xyz(20.0 * i as f32, 300.0, 0.),
-            Point {
-                previous_position: None,
-                mass,
-            },
-            Name::new(format!("Point {}", i)),
-        ));
-        if previous_entity.is_none() {
-            cmd.insert((FollowMouse, Locked));
-        }
-        let entity = cmd.id();
-        if let Some(e) = previous_entity {
-            commands.spawn((
-                Line {
-                    start: e,
-                    end: entity,
-                },
-                DistanceContraint {
-                    desired_distance: stick_length,
-                },
-                Name::new(format!("Stick {}", i)),
-            ));
-        }
-        previous_entity = Some(entity);
-    }
-}
-
 fn setup_blob(mut commands: Commands) {
     let radius = 50.0;
     let circumference = radius * PI * 2.0;
     let area = radius * radius * PI * 1.2;
-    let num_points = 8;
+    let num_points = 32;
     let chord_length = circumference / num_points as f32;
 
     let mut previous_entity = None;
@@ -309,21 +313,24 @@ fn setup_blob(mut commands: Commands) {
     let mut points = Vec::new();
 
     for i in 0..num_points {
-        let mass = 50.0;
+        let mass = 200.0;
         let angle = TAU * (i as f32 / num_points as f32) - PI / 2.0;
         let offset = Vec2::new(angle.cos() * radius, angle.sin() * radius);
 
-        let mut cmd = commands.spawn((
+        let cmd = commands.spawn((
             Transform::from_xyz(offset.x + 250.0, offset.y + 250.0, 0.0),
             Point {
                 previous_position: None,
                 mass,
+                displacement: Vec3::ZERO,
+                displacement_weight: 0,
             },
-            Friction(0.95),
+            Friction(0.9),
+            CollideWithMouse,
         ));
 
         if previous_entity.is_none() {
-            cmd.insert(FollowMouse);
+            //cmd.insert(FollowMouse);
             first_entity = Some(cmd.id());
         }
 
@@ -376,8 +383,10 @@ fn main() {
     let system_set = (
         verlet_integration,
         follow_mouse,
-        apply_area_constraint,
+        collide_with_mouse,
         apply_distance_constraint,
+        apply_area_constraint,
+        apply_displacement,
         constrain_to_world,
     )
         .chain();
@@ -387,9 +396,8 @@ fn main() {
             Startup,
             (
                 setup_camera,
-                setup_blob,
-                display_points.after(setup_blob),
-                display_line.after(setup_blob),
+                setup_blob.before(display_points),
+                //display_points,
             ),
         )
         .add_systems(Update, update_line)
