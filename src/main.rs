@@ -1,4 +1,4 @@
-use bevy::{prelude::*, sprite::Wireframe2dPlugin};
+use bevy::{prelude::*, sprite::Wireframe2dPlugin, window::PrimaryWindow};
 
 #[derive(Component)]
 struct Point {
@@ -21,12 +21,23 @@ struct Friction(f32);
 struct Locked;
 
 #[derive(Component)]
+struct FollowMouse;
+
+#[derive(Component)]
 struct Line {
     start: Entity,
     end: Entity,
 }
 
-fn constrain_to_world(mut query: Query<&mut Transform, With<Point>>) {
+fn constrain_to_world(
+    mut query: Query<&mut Transform, Or<(With<Point>, With<FollowMouse>)>>,
+    mut gizmos: Gizmos,
+) {
+    gizmos.rect_2d(
+        Isometry2d::from_translation(Vec2::new(250.0, 250.0)),
+        Vec2::new(500.0, 500.0),
+        Color::WHITE,
+    );
     for mut transform in query.iter_mut() {
         transform.translation.x = transform.translation.x.clamp(0.0, 500.0);
         transform.translation.y = transform.translation.y.clamp(0.0, 500.0);
@@ -153,6 +164,35 @@ fn display_points(
     }
 }
 
+fn follow_mouse(
+    windows_query: Query<&Window, With<PrimaryWindow>>,
+    camera_query: Query<(&Camera, &GlobalTransform)>,
+    mut query: Query<&mut Transform, With<FollowMouse>>,
+    mouse_input: Res<ButtonInput<MouseButton>>,
+) {
+    // Only update positions if the left mouse button is currently pressed.
+    if !mouse_input.pressed(MouseButton::Left) {
+        return;
+    }
+
+    let (camera, camera_transform) = camera_query.single();
+    let window = windows_query.single();
+
+    if let Some(cursor_pos) = window.cursor_position() {
+        match camera.viewport_to_world_2d(camera_transform, cursor_pos) {
+            Ok(world_position) => {
+                for mut transform in query.iter_mut() {
+                    transform.translation.x = world_position.x;
+                    transform.translation.y = world_position.y;
+                }
+            }
+            Err(e) => {
+                panic!("{:?}", e);
+            }
+        }
+    }
+}
+
 fn setup_free_line(mut commands: Commands) {
     let stick_length: f32 = 50.0;
     let points_count = 5;
@@ -168,7 +208,7 @@ fn setup_free_line(mut commands: Commands) {
             Name::new(format!("Point {}", i)),
         ));
         if previous_entity.is_none() {
-            cmd.insert((Gravity(0.), Locked));
+            cmd.insert((FollowMouse, Locked));
         }
         let entity = cmd.id();
         if let Some(e) = previous_entity {
@@ -178,7 +218,7 @@ fn setup_free_line(mut commands: Commands) {
                     end: entity,
                 },
                 DistanceContraint {
-                    desired_distance: stick_length - (i as f32 * 5.),
+                    desired_distance: stick_length,
                 },
                 Name::new(format!("Stick {}", i)),
             ));
@@ -188,11 +228,17 @@ fn setup_free_line(mut commands: Commands) {
 }
 
 fn setup_camera(mut commands: Commands) {
-    commands.spawn(Camera2d);
+    commands.spawn((Camera2d, Transform::from_xyz(250., 250., 0.)));
 }
 
 fn main() {
-    let system_set = (verlet_integration, apply_distance_constraint).chain();
+    let system_set = (
+        verlet_integration,
+        follow_mouse,
+        apply_distance_constraint,
+        constrain_to_world,
+    )
+        .chain();
     App::new()
         .add_plugins((DefaultPlugins, Wireframe2dPlugin))
         .add_systems(
@@ -205,6 +251,6 @@ fn main() {
             ),
         )
         .add_systems(Update, update_line)
-        .add_systems(FixedUpdate, (system_set, constrain_to_world))
+        .add_systems(FixedUpdate, system_set)
         .run();
 }
