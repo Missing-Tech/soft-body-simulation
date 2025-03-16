@@ -1,9 +1,16 @@
+use std::f32::consts::{PI, TAU};
+
 use bevy::{prelude::*, sprite::Wireframe2dPlugin, window::PrimaryWindow};
 
 #[derive(Component)]
 struct Point {
     previous_position: Option<Vec3>,
     mass: f32,
+}
+
+#[derive(Component)]
+struct Blob {
+    lines: Vec<Entity>,
 }
 
 #[derive(Component)]
@@ -194,13 +201,13 @@ fn follow_mouse(
 }
 
 fn setup_free_line(mut commands: Commands) {
-    let stick_length: f32 = 50.0;
-    let points_count = 5;
+    let stick_length: f32 = 20.0;
+    let points_count = 30;
     let mut previous_entity = None;
     for i in 0..=points_count {
         let mass = 50.0;
         let mut cmd = commands.spawn((
-            Transform::from_xyz(50.0 * i as f32, 300.0 + (i as f32 * 15.), 0.),
+            Transform::from_xyz(20.0 * i as f32, 300.0, 0.),
             Point {
                 previous_position: None,
                 mass,
@@ -227,6 +234,77 @@ fn setup_free_line(mut commands: Commands) {
     }
 }
 
+fn setup_blob(mut commands: Commands) {
+    let radius = 50.0;
+    let circumference = radius * PI * 2.0;
+    let num_points = 8;
+    let chord_length = circumference / num_points as f32;
+
+    let mut previous_entity = None;
+    let mut first_entity = None;
+
+    let mut lines = Vec::new();
+
+    for i in 0..num_points {
+        let mass = 50.0;
+        let angle = TAU * (i as f32 / num_points as f32) - PI / 2.0;
+        let offset = Vec2::new(angle.cos() * radius, angle.sin() * radius);
+
+        let mut cmd = commands.spawn((
+            Transform::from_xyz(offset.x + 250.0, offset.y + 250.0, 0.0),
+            Point {
+                previous_position: None,
+                mass,
+            },
+        ));
+
+        if previous_entity.is_none() {
+            cmd.insert(FollowMouse);
+            first_entity = Some(cmd.id());
+        }
+
+        let entity = cmd.id();
+
+        if let Some(e) = previous_entity {
+            let line_entity = commands
+                .spawn((
+                    Line {
+                        start: e,
+                        end: entity,
+                    },
+                    DistanceContraint {
+                        desired_distance: chord_length,
+                    },
+                ))
+                .id();
+            lines.push(line_entity);
+        }
+
+        previous_entity = Some(entity);
+    }
+
+    // Finally, connect the last point to the first, to close the loop.
+    if let (Some(first), Some(last)) = (first_entity, previous_entity) {
+        if first != last {
+            let line_entity = commands
+                .spawn((
+                    Line {
+                        start: last,
+                        end: first,
+                    },
+                    DistanceContraint {
+                        desired_distance: chord_length,
+                    },
+                ))
+                .id();
+            lines.push(line_entity);
+        }
+    }
+
+    // Create a single “Blob” entity referencing all line entities.
+    commands.spawn((Blob { lines }, Name::new("Blob")));
+}
+
 fn setup_camera(mut commands: Commands) {
     commands.spawn((Camera2d, Transform::from_xyz(250., 250., 0.)));
 }
@@ -245,9 +323,9 @@ fn main() {
             Startup,
             (
                 setup_camera,
-                setup_free_line,
-                display_points.after(setup_free_line),
-                display_line.after(setup_free_line),
+                setup_blob,
+                display_points.after(setup_blob),
+                display_line.after(setup_blob),
             ),
         )
         .add_systems(Update, update_line)
