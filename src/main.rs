@@ -1,6 +1,6 @@
 use std::f32::consts::{PI, TAU};
 
-use bevy::{prelude::*, sprite::Wireframe2dPlugin, window::PrimaryWindow};
+use bevy::{prelude::*, window::PrimaryWindow};
 
 #[derive(Component)]
 struct Point {
@@ -203,32 +203,28 @@ fn apply_displacement(mut query: Query<(&mut Transform, &mut Point)>) {
     }
 }
 
-fn update_line(
-    mut line_query: Query<&Line>,
-    point_query: Query<&Transform, (With<Point>, Without<Line>)>,
+fn draw_blob(
+    mut blob_query: Query<&Blob>,
+    point_query: Query<(&Transform, &Point), (With<Point>, Without<Line>, Without<Blob>)>,
     mut gizmos: Gizmos,
 ) {
-    for line in line_query.iter_mut() {
-        if let (Ok(start_tf), Ok(end_tf)) = (point_query.get(line.start), point_query.get(line.end))
-        {
-            gizmos.line(start_tf.translation, end_tf.translation, Color::WHITE);
+    for blob in blob_query.iter_mut() {
+        let mut positions = Vec::with_capacity(blob.points.len());
+        for &entity in &blob.points {
+            if let Ok((transform, _)) = point_query.get(entity) {
+                positions.push(transform.translation.truncate());
+            }
         }
-    }
-}
 
-fn display_points(
-    query: Query<Entity, With<Point>>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-) {
-    let circle = meshes.add(Circle::new(8.0));
-    let colour = materials.add(ColorMaterial::from(Color::WHITE));
+        if positions.len() > 1 {
+            let bezier = CubicCardinalSpline::new(0.5, positions)
+                .to_curve_cyclic()
+                .unwrap();
 
-    for entity in query.iter() {
-        commands
-            .entity(entity)
-            .insert((Mesh2d(circle.clone()), MeshMaterial2d(colour.clone())));
+            let segments = bezier.domain().spaced_points(100).unwrap();
+
+            gizmos.curve_2d(bezier, segments, Color::WHITE);
+        }
     }
 }
 
@@ -304,7 +300,7 @@ fn setup_blob(mut commands: Commands) {
     let radius = 50.0;
     let circumference = radius * PI * 2.0;
     let area = radius * radius * PI * 1.2;
-    let num_points = 32;
+    let num_points = 16;
     let chord_length = circumference / num_points as f32;
 
     let mut previous_entity = None;
@@ -313,7 +309,7 @@ fn setup_blob(mut commands: Commands) {
     let mut points = Vec::new();
 
     for i in 0..num_points {
-        let mass = 200.0;
+        let mass = 100.0;
         let angle = TAU * (i as f32 / num_points as f32) - PI / 2.0;
         let offset = Vec2::new(angle.cos() * radius, angle.sin() * radius);
 
@@ -391,16 +387,9 @@ fn main() {
     )
         .chain();
     App::new()
-        .add_plugins((DefaultPlugins, Wireframe2dPlugin))
-        .add_systems(
-            Startup,
-            (
-                setup_camera,
-                setup_blob.before(display_points),
-                //display_points,
-            ),
-        )
-        .add_systems(Update, update_line)
+        .add_plugins(DefaultPlugins)
+        .add_systems(Startup, (setup_camera, setup_blob))
+        .add_systems(Update, draw_blob)
         .add_systems(FixedUpdate, system_set)
         .run();
 }
