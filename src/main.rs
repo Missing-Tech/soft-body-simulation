@@ -1,6 +1,10 @@
 use std::f32::consts::{PI, TAU};
 
 use bevy::{prelude::*, window::PrimaryWindow};
+use bevy_prototype_lyon::{
+    draw::Fill, entity::ShapeBundle, path::PathBuilder, plugin::ShapePlugin,
+    prelude::GeometryBuilder,
+};
 
 #[derive(Component)]
 struct Point {
@@ -15,6 +19,9 @@ struct Blob {
     points: Vec<Entity>,
     circumference: f32,
 }
+
+#[derive(Component)]
+struct BlobShape;
 
 #[derive(Component)]
 struct DistanceContraint {
@@ -204,10 +211,15 @@ fn apply_displacement(mut query: Query<(&mut Transform, &mut Point)>) {
 }
 
 fn draw_blob(
+    mut commands: Commands,
     mut blob_query: Query<&Blob>,
+    old_shapes: Query<Entity, With<BlobShape>>,
     point_query: Query<(&Transform, &Point), (With<Point>, Without<Line>, Without<Blob>)>,
-    mut gizmos: Gizmos,
 ) {
+    for entity in old_shapes.iter() {
+        commands.entity(entity).despawn();
+    }
+
     for blob in blob_query.iter_mut() {
         let mut positions = Vec::with_capacity(blob.points.len());
         for &entity in &blob.points {
@@ -217,13 +229,36 @@ fn draw_blob(
         }
 
         if positions.len() > 1 {
-            let bezier = CubicCardinalSpline::new(0.5, positions)
+            let spline = CubicCardinalSpline::new(0.5, positions)
                 .to_curve_cyclic()
                 .unwrap();
+            let mut domain = spline.domain().spaced_points(100).unwrap();
+            let mut path_builder = PathBuilder::new();
 
-            let segments = bezier.domain().spaced_points(100).unwrap();
+            let start = spline.sample(domain.next().unwrap()).unwrap();
+            path_builder.move_to(start);
 
-            gizmos.curve_2d(bezier, segments, Color::WHITE);
+            for t in domain.into_iter() {
+                let p = spline.sample(t);
+                if p.is_some() {
+                    path_builder.line_to(p.unwrap());
+                }
+            }
+
+            path_builder.close();
+
+            let path = path_builder.build();
+
+            commands.spawn((
+                ShapeBundle {
+                    path: GeometryBuilder::build_as(&path),
+                    transform: Transform::default(),
+                    visibility: default(),
+                    ..default()
+                },
+                Fill::color(Color::srgb(0.42, 0.44, 0.53)),
+                BlobShape,
+            ));
         }
     }
 }
@@ -297,10 +332,10 @@ fn follow_mouse(
 }
 
 fn setup_blob(mut commands: Commands) {
-    let radius = 50.0;
+    let radius = 80.0;
     let circumference = radius * PI * 2.0;
     let area = radius * radius * PI * 1.2;
-    let num_points = 16;
+    let num_points = 24;
     let chord_length = circumference / num_points as f32;
 
     let mut previous_entity = None;
@@ -309,7 +344,7 @@ fn setup_blob(mut commands: Commands) {
     let mut points = Vec::new();
 
     for i in 0..num_points {
-        let mass = 100.0;
+        let mass = 150.0;
         let angle = TAU * (i as f32 / num_points as f32) - PI / 2.0;
         let offset = Vec2::new(angle.cos() * radius, angle.sin() * radius);
 
@@ -321,7 +356,7 @@ fn setup_blob(mut commands: Commands) {
                 displacement: Vec3::ZERO,
                 displacement_weight: 0,
             },
-            Friction(0.9),
+            Friction(0.95),
             CollideWithMouse,
         ));
 
@@ -387,8 +422,8 @@ fn main() {
     )
         .chain();
     App::new()
-        .add_plugins(DefaultPlugins)
-        .add_systems(Startup, (setup_camera, setup_blob))
+        .add_plugins((DefaultPlugins, ShapePlugin))
+        .add_systems(Startup, (setup_camera, setup_blob, setup_blob))
         .add_systems(Update, draw_blob)
         .add_systems(FixedUpdate, system_set)
         .run();
